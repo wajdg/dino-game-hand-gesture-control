@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hand-Controlled Dino Game</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+    <script src="https://cdn.jsdelivr.net/npm/handtrackjs/dist/handtrack.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: Arial, sans-serif;
+            background-color: #f2f2f2;
+        }
+
+        #game-container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background: #c7d4b7; /* Light background for the game */
+        }
+
+        #game-canvas {
+            background: #87ceeb; /* Sky blue for the background */
+            border: 2px solid #333;
+            box-shadow: 0 0 20px rgba(0,0,0,0.2);
+        }
+
+        #score {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            font-size: 24px;
+            color: #333;
+            background: rgba(255, 255, 255, 0.8);
+            padding: 5px 15px;
+            border-radius: 5px;
+        }
+
+        #game-over {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0, 0, 0, 0.9);
+            color: white;
+            padding: 30px;
+            border-radius: 10px;
+            text-align: center;
+            display: none;
+            z-index: 100;
+        }
+
+        #game-over h2 {
+            margin: 0 0 10px 0;
+        }
+
+        #game-over button {
+            background: #4CAF50;
+            border: none;
+            color: white;
+            padding: 10px 20px;
+            margin-top: 15px;
+            font-size: 16px;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+
+        #start-screen {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.8);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            color: white;
+            z-index: 200;
+        }
+
+        #start-screen h1 {
+            font-size: 36px;
+            margin-bottom: 20px;
+        }
+
+        #start-screen button {
+            background: #4CAF50;
+            border: none;
+            color: white;
+            padding: 15px 30px;
+            font-size: 18px;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+    <div id="start-screen">
+        <h1>Hand-Controlled Dino Game</h1>
+        <p>Raise your hand to jump!</p>
+        <button id="start-btn">Start Game</button>
+    </div>
+
+    <div id="game-container">
+        <canvas id="game-canvas" width="800" height="400"></canvas>
+        <video id="camera-feed" autoplay playsinline muted></video>
+        <div id="score">Score: 0</div>
+        <div id="game-over">
+            <h2>Game Over!</h2>
+            <p id="final-score">Score: 0</p>
+            <button id="restart-btn">Play Again</button>
+        </div>
+    </div>
+
+    <script>
+        // ===== GAME VARIABLES =====
+        const canvas = document.getElementById('game-canvas');
+        const ctx = canvas.getContext('2d');
+        const scoreElement = document.getElementById('score');
+        const gameOverScreen = document.getElementById('game-over');
+        const finalScoreElement = document.getElementById('final-score');
+        const restartBtn = document.getElementById('restart-btn');
+        const startScreen = document.getElementById('start-screen');
+        const startBtn = document.getElementById('start-btn');
+
+        // Game state
+        let score = 0;
+        let gameSpeed = 5;
+        let isGameOver = false;
+        let isGameRunning = false;
+        let animationId;
+
+        // Dino properties (Design updated for the Dino)
+        const dino = {
+            x: 50,
+            y: 300,
+            width: 50,
+            height: 80,
+            isJumping: false,
+            isDuck: false,
+            jumpVelocity: 0,
+            gravity: 0.8,
+            draw() {
+                // Draw Dino's body (8-bit style)
+                ctx.fillStyle = '#333'; // Dino body color
+                ctx.fillRect(this.x, this.y - this.height, this.width, this.height);
+
+                // Draw Dino's eyes (just circles)
+                ctx.fillStyle = 'white';
+                ctx.beginPath();
+                ctx.arc(this.x + 15, this.y - 55, 5, 0, Math.PI * 2); // Left eye
+                ctx.arc(this.x + 35, this.y - 55, 5, 0, Math.PI * 2); // Right eye
+                ctx.fill();
+            },
+            jump() {
+                if (!this.isJumping && !this.isDuck) {
+                    this.isJumping = true;
+                    this.jumpVelocity = -15;
+                }
+            },
+            duck() {
+                if (!this.isJumping) {
+                    this.isDuck = true;
+                    this.height = 40;  // Make the dino shorter to simulate ducking
+                }
+            },
+            stand() {
+                this.isDuck = false;
+                this.height = 80;  // Reset height when standing
+            },
+            update() {
+                if (this.isJumping) {
+                    this.y += this.jumpVelocity;
+                    this.jumpVelocity += this.gravity;
+                    
+                    if (this.y >= 300) {
+                        this.y = 300;
+                        this.isJumping = false;
+                    }
+                }
+            }
+        };
+
+        // Cactus obstacles
+        const obstacles = [];
+        function createObstacle() {
+            if (Math.random() < 0.02 && obstacles.length < 3) {
+                const height = Math.random() > 0.5 ? 50 : 30;
+                obstacles.push({
+                    x: canvas.width,
+                    y: 300 - height,
+                    width: 30,
+                    height: height,
+                    speed: gameSpeed,
+                    draw() {
+                        ctx.fillStyle = '#2E8B57';  // Cactus color
+                        ctx.fillRect(this.x, this.y, this.width, this.height);
+                    },
+                    update() {
+                        this.x -= this.speed;
+                    },
+                    isOffScreen() {
+                        return this.x < -this.width;
+                    }
+                });
+            }
+        }
+
+        // Ground
+        function drawGround() {
+            ctx.fillStyle = '#333'; // Ground color
+            ctx.fillRect(0, 300, canvas.width, 2);
+        }
+
+        // Game loop
+        function gameLoop() {
+            if (!isGameRunning || isGameOver) return;
+            
+            // Clear canvas
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            // Draw ground and obstacles
+            drawGround();
+            
+            // Update dino and draw it
+            dino.update();
+            dino.draw();
+            
+            // Create and update obstacles
+            createObstacle();
+            for (let i = obstacles.length - 1; i >= 0; i--) {
+                obstacles[i].update();
+                obstacles[i].draw();
+                
+                // Remove off-screen obstacles
+                if (obstacles[i].isOffScreen()) {
+                    obstacles.splice(i, 1);
+                    score++;
+                    scoreElement.textContent = `Score: ${score}`;
+                    gameSpeed += 0.1;
+                }
+                
+                // Check collision
+                if (
+                    dino.x < obstacles[i].x + obstacles[i].width &&
+                    dino.x + dino.width > obstacles[i].x &&
+                    dino.y < obstacles[i].y + obstacles[i].height &&
+                    dino.y > obstacles[i].y
+                ) {
+                    endGame();
+                }
+            }
+            
+            animationId = requestAnimationFrame(gameLoop);
+        }
+
+        function endGame() {
+            isGameOver = true;
+            cancelAnimationFrame(animationId);
+            finalScoreElement.textContent = `Score: ${score}`;
+            gameOverScreen.style.display = 'block';
+        }
+
+        function restartGame() {
+            isGameOver = false;
+            obstacles.length = 0;
+            score = 0;
+            gameSpeed = 5;
+            scoreElement.textContent = `Score: ${score}`;
+            gameOverScreen.style.display = 'none';
+            dino.y = 300;
+            dino.isJumping = false;
+            dino.stand();  // Reset Dino standing
+            gameLoop();
+        }
+
+        // ===== HAND TRACKING =====
+        const video = document.getElementById('camera-feed');
+        const modelParams = {
+            flipHorizontal: true,
+            maxNumBoxes: 1,
+            iouThreshold: 0.5,
+            scoreThreshold: 0.7
+        };
+
+        let model;
+
+        // Load hand tracking model
+        handTrack.load(modelParams).then(loadedModel => {
+            model = loadedModel;
+            startVideo();
+        });
+
+        // Start webcam
+        function startVideo() {
+            handTrack.startVideo(video).then(status => {
+                if (status) {
+                    console.log("Camera started");
+                    runDetection();
+                }
+            });
+        }
+
+        // Detect hand gestures
+        function runDetection() {
+            model.detect(video).then(predictions => {
+                if (predictions.length > 0) {
+                    processGestures(predictions[0]);
+                }
+                requestAnimationFrame(runDetection);
+            });
+        }
+
+        // Control dino based on hand gestures
+        function processGestures(prediction) {
+            if (!isGameRunning || isGameOver) return;
+            
+            const handY = prediction.bbox[1];  // Y-position of hand
+            
+            // If hand is higher on the screen -> Jump
+            if (handY < 150) {  // Adjust this value for a more precise gesture
+                dino.jump();
+            } else if (handY > 250) {  // If hand is low -> Duck
+                dino.duck();
+            } else {
+                dino.stand();  // Default: Dino stands
+            }
+        }
+
+        // ===== EVENT LISTENERS =====
+        startBtn.addEventListener('click', () => {
+            startScreen.style.display = 'none';
+            isGameRunning = true;
+            gameLoop();
+        });
+
+        restartBtn.addEventListener('click', restartGame);
+    </script>
+</body>
+</html>
